@@ -3,7 +3,11 @@
 #include <cstdint>
 #include <random>
 #include <cmath>
+#include <algorithm>
+#include <numeric>
+#include <functional>
 #include <gsl/span>
+#include <execution>
 
 static std::default_random_engine defaultRandomEngine{ std::random_device{}() };
 
@@ -16,21 +20,15 @@ public:
 		static std::normal_distribution<float> normalDistributionHidden{ 0.0, 1 / std::sqrtf(static_cast<float>(NumHiddenNodes)) };
 		static std::normal_distribution<float> normalDistributionOutput{ 0.0, 1 / std::sqrtf(static_cast<float>(NumOutputNodes)) };
 
-		for (auto& row : inputWeights)
-		{
-			for (auto& entry : row)
+		std::for_each(std::execution::par_unseq, std::begin(inputWeights), std::end(inputWeights), [](std::array<float, NumInputNodes>& row)
 			{
-				entry = normalDistributionHidden(defaultRandomEngine);
-			}
-		}
+				std::generate(std::execution::seq, std::begin(row), std::end(row), []() { return normalDistributionHidden(defaultRandomEngine); });
+			});
 
-		for (auto& row : outputWeights)
-		{
-			for (auto& entry : row)
+		std::for_each(std::execution::par_unseq, std::begin(outputWeights), std::end(outputWeights), [](std::array<float, NumHiddenNodes>& row)
 			{
-				entry = normalDistributionOutput(defaultRandomEngine);
-			}
-		}
+				std::generate(std::execution::seq, std::begin(row), std::end(row), []() { return normalDistributionOutput(defaultRandomEngine); });
+			});
 	}
 
 	NeuralNetwork(const NeuralNetwork& other) = delete;
@@ -92,39 +90,50 @@ void Train(NeuralNetwork<NumInputNodes, NumHiddenNodes, NumOutputNodes>& neuralN
 {
 	std::array<float, NumHiddenNodes> hiddenValues{};
 
-	for (size_t i{}; i < NumHiddenNodes; ++i)
-	{
-		for (size_t j{}; j < NumInputNodes; ++j)
+	std::generate(std::execution::seq, std::begin(hiddenValues), std::end(hiddenValues), [&input, &neuralNetwork, i = 0]() mutable
 		{
-			hiddenValues[i] += input[j] * neuralNetwork.inputWeights[i][j];
-		}
-	}
+			auto out =  std::transform_reduce(
+				std::execution::seq,
+				std::begin(input),
+				std::end(input),
+				std::begin(neuralNetwork.inputWeights[i]),
+				0.0f,
+				std::plus<>(),
+				std::multiplies<>());
+			++i;
+			return out;
+		});
 
-	for (auto& hiddenValue : hiddenValues)
-	{
-		hiddenValue = 1 / (1 + std::exp(-hiddenValue));
-	}
+	std::transform(std::execution::seq, std::begin(hiddenValues), std::end(hiddenValues), std::begin(hiddenValues), [](float value)
+		{
+			return 1 / (1 + std::exp(-value));
+		});
 
 	std::array<float, NumOutputNodes> outputValues{};
 
-	for (size_t i{}; i < NumOutputNodes; ++i)
-	{
-		for (size_t j{}; j < NumHiddenNodes; ++j)
+	std::generate(std::execution::seq, std::begin(outputValues), std::end(outputValues), [&hiddenValues, &neuralNetwork, i = 0]() mutable
 		{
-			outputValues[i] += hiddenValues[j] * neuralNetwork.outputWeights[i][j];
-		}
-	}
 
-	for (auto& outputValue : outputValues)
-	{
-		outputValue = 1 / (1 + std::exp(-outputValue));
-	}
+			auto out = std::transform_reduce(
+				std::execution::seq,
+				std::begin(hiddenValues),
+				std::end(hiddenValues),
+				std::begin(neuralNetwork.outputWeights[i]),
+				0.0f,
+				std::plus<>(),
+				std::multiplies<>());
+
+			++i;
+			return out;
+		});
+
+	std::transform(std::execution::seq, std::begin(outputValues), std::end(outputValues), std::begin(outputValues), [](float value)
+		{
+			return 1 / (1 + std::exp(-value));
+		});
 
 	std::array<float, NumOutputNodes> outputErrorValues{};
-	for (size_t i{}; i < NumOutputNodes; ++i)
-	{
-		outputErrorValues[i] = target[i] - outputValues[i];
-	}
+	std::transform(std::execution::seq, std::begin(target), std::end(target), std::begin(outputValues), std::begin(outputErrorValues), std::minus<>());
 
 	std::array<float, NumHiddenNodes> hiddenErrorValues{};
 	for (size_t i{}; i < NumHiddenNodes; ++i)
